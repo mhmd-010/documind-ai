@@ -1,0 +1,28 @@
+
+[
+  {
+    "id": "q1",
+    "question": "When is the dissertation submission deadline?",
+    "answer_text": "30th Sep 2025, 11:00"
+  },
+  {
+    "id": "q2",
+    "question": "What is the maximum dissertation word limit?",
+    "answer_text": "12,000 words"
+  },
+  {
+    "id": "q3",
+    "question": "Who is the dissertation module leader?",
+    "answer_text": "Dr Sarath Dantu"
+  },
+  {
+    "id": "q4",
+    "question": "How many hours are allocated to the assessment?",
+    "answer_text": "600 hours"
+  },
+  {
+    "id": "q5",
+    "question": "What is the dissertation assessment type?",
+    "answer_text": "Individual"
+  }
+]

@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+data/*
+!data/.gitkeep
+*.pyc
+# Local persistent vector database
+data/chroma_db/
+data/uploads/

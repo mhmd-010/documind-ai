@@ -1,0 +1,208 @@
+
+import logging
+from pathlib import Path
+from uuid import uuid4
+
+import pymupdf
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from pydantic import BaseModel, Field
+
+from app.pdf_processor import extract_text_from_pdf
+from app.text_chunker import chunk_pages
+from app.vector_store import VectorStore
+from app.llm_service import LLMService
+from app.rag_pipeline import RAGPipeline
+from app.persistent_hybrid_retriever import PersistentHybridRetriever
+
+
+# Configure the logger.
+logger = logging.getLogger(__name__)
+
+
+# Locate the project directory.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Store uploaded PDFs in a dedicated folder.
+UPLOAD_DIR = BASE_DIR / "data" / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Maximum PDF size: 10 MB.
+MAX_FILE_SIZE = 10 * 1024 * 1024
+
+
+app = FastAPI(
+    title="DocuMind AI",
+    description="Document question-answering API using hybrid RAG.",
+    version="1.0.0"
+)
+
+
+@app.get("/health")
+def health_check():
+    """Check whether the API server is running."""
+    return {
+        "status": "healthy",
+        "service": "DocuMind AI",
+        "version": "1.0.0"
+    }
+
+
+@app.post("/documents/upload", status_code=201)
+async def upload_document(file: UploadFile = File(...)):
+    """
+    Upload a PDF, extract text, create chunks,
+    and store embeddings in ChromaDB.
+    """
+
+    # STEP 1: Validate the filename.
+    if not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="A filename is required."
+        )
+
+    if Path(file.filename).suffix.lower() != ".pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are supported."
+        )
+
+    # STEP 2: Read the file with a size limit.
+    content = await file.read(MAX_FILE_SIZE + 1)
+
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="PDF exceeds the 10 MB size limit."
+        )
+
+    # STEP 3: Check the PDF file signature.
+    if not content.startswith(b"%PDF-"):
+        raise HTTPException(
+            status_code=400,
+            detail="The uploaded file is not a valid PDF."
+        )
+
+    # STEP 4: Generate a unique document ID.
+    document_id = uuid4().hex
+
+    # Avoid trusting the user's filename as a path.
+    saved_path = UPLOAD_DIR / f"{document_id}.pdf"
+
+    try:
+        # STEP 5: Save the PDF.
+        saved_path.write_bytes(content)
+
+        # STEP 6: Extract text from PDF pages.
+        pages = extract_text_from_pdf(str(saved_path))
+
+        # STEP 7: Split extracted text into chunks.
+        chunks = chunk_pages(
+            pages,
+            chunk_size=800,
+            overlap=150
+        )
+
+        if not chunks:
+            raise HTTPException(
+                status_code=422,
+                detail="No extractable text found in PDF."
+            )
+
+        # STEP 8: Store the chunks and embeddings.
+        store = VectorStore(
+            persist_directory=str(
+                BASE_DIR / "data" / "chroma_db"
+            )
+        )
+
+        store.add_chunks(
+            chunks=chunks,
+            document_id=document_id
+        )
+
+        # STEP 9: Return document metadata.
+        return {
+            "message": "Document uploaded and indexed successfully.",
+            "document_id": document_id,
+            "filename": file.filename,
+            "pages": len(pages),
+            "chunks": len(chunks)
+        }
+
+    except HTTPException:
+        raise
+
+    except (pymupdf.FileDataError, pymupdf.EmptyFileError):
+        raise HTTPException(
+            status_code=400,
+            detail="The PDF is corrupted or unreadable."
+        )
+
+    except Exception:
+        # Avoid exposing internal errors to API clients.
+        raise HTTPException(
+            status_code=500,
+            detail="Document processing failed."
+        )
+
+    finally:
+        # Remove temporary upload files after processing.
+        saved_path.unlink(missing_ok=True)
+
+        # Close the uploaded file handle.
+        await file.close()
+
+
+
+class QuestionRequest(BaseModel):
+    question: str = Field(min_length=1)
+    top_k: int = Field(default=3, ge=1, le=20)
+    document_id: str | None = None
+
+
+@app.post("/ask")
+def ask_question(request: QuestionRequest):
+
+    if not request.question.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Question cannot be empty."
+        )
+
+    try:
+        store = VectorStore(
+            persist_directory=str(
+                BASE_DIR / "data" / "chroma_db"
+            )
+        )
+
+        retriever = PersistentHybridRetriever(
+            vector_store=store
+        )
+
+        llm = LLMService(
+            model_name="openai/gpt-oss-20b"
+        )
+
+        rag = RAGPipeline(
+            vector_store=retriever,
+            llm_service=llm
+        )
+
+        result = rag.ask(
+            question=request.question,
+            top_k=request.top_k,
+            document_id=request.document_id
+        )
+
+        return result
+
+    except Exception:
+        logger.exception("Question answering failed")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Question answering failed."
+        )
