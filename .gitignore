@@ -8,3 +8,20 @@ data/*
 # Local persistent vector database
 data/chroma_db/
 data/uploads/
+# Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Frontend environment variables
+frontend/.env*
+!frontend/.env.example
+
+# Local SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Build and test output
+frontend/coverage/
+frontend/*.tsbuildinfo
