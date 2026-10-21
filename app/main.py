@@ -2,8 +2,17 @@
 import logging
 from pathlib import Path
 from uuid import uuid4
+from fastapi.middleware.cors import CORSMiddleware
 
 import pymupdf
+from contextlib import asynccontextmanager
+
+from app.chat_database import (
+    initialize_database,
+    save_message,
+    get_messages,
+    delete_messages,
+)
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -31,10 +40,28 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_database()
+    yield
+
+
 app = FastAPI(
     title="DocuMind AI",
     description="Document question-answering API using hybrid RAG.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
+)
+# Allow the Next.js frontend to communicate with FastAPI.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -117,10 +144,14 @@ async def upload_document(file: UploadFile = File(...)):
             )
         )
 
+        
         store.add_chunks(
             chunks=chunks,
-            document_id=document_id
+            document_id=document_id,
+            filename=Path(file.filename).name,
+            total_pages=len(pages)
         )
+
 
         # STEP 9: Return document metadata.
         return {
@@ -197,6 +228,21 @@ def ask_question(request: QuestionRequest):
             document_id=request.document_id
         )
 
+        # Save conversations associated with a specific PDF.
+        if request.document_id:
+            save_message(
+                document_id=request.document_id,
+                role="user",
+                content=request.question,
+            )
+
+            save_message(
+                document_id=request.document_id,
+                role="assistant",
+                content=result["answer"],
+                sources=result.get("sources", []),
+            )
+
         return result
 
     except Exception:
@@ -205,4 +251,139 @@ def ask_question(request: QuestionRequest):
         raise HTTPException(
             status_code=500,
             detail="Question answering failed."
+        )
+
+
+@app.get("/documents")
+def list_documents():
+    """Return previously indexed documents from ChromaDB."""
+
+    try:
+        # STEP 1: Connect to the existing persistent vector database.
+        store = VectorStore(
+            persist_directory=str(
+                BASE_DIR / "data" / "chroma_db"
+            )
+        )
+
+        # STEP 2: Retrieve metadata for stored chunks.
+        results = store.collection.get(
+            include=["metadatas"]
+        )
+
+        # STEP 3: Group chunks by their document ID.
+        documents = {}
+
+        for metadata in results.get("metadatas", []):
+            if not metadata:
+                continue
+
+            document_id = metadata.get("document_id")
+
+            if not document_id:
+                continue
+
+            if document_id not in documents:
+                documents[document_id] = {
+                    "document_id": document_id,
+                    "filename": metadata.get(
+                        "filename", "Unknown PDF"
+                    ),
+                    "pages": metadata.get(
+                        "total_pages", 0
+                    ),
+                    "chunks": 0
+                }
+
+            documents[document_id]["chunks"] += 1
+
+        # STEP 4: Return the grouped document records.
+        return {
+            "documents": list(documents.values())
+        }
+
+    except Exception:
+        logger.exception("Failed to list documents")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve documents."
+        )
+
+
+@app.delete("/documents/{document_id}")
+def delete_document(document_id: str):
+    """
+    Delete one indexed document from ChromaDB.
+
+    Only chunks with the matching document_id
+    are removed. Other documents remain untouched.
+    """
+
+    try:
+        # STEP 1: Connect to the existing database.
+        store = VectorStore(
+            persist_directory=str(
+                BASE_DIR / "data" / "chroma_db"
+            )
+        )
+
+        # STEP 2: Find chunks belonging to this document.
+        matching = store.collection.get(
+            where={"document_id": document_id},
+            include=[]
+        )
+
+        chunk_ids = matching["ids"]
+
+        # STEP 3: Return 404 if the document does not exist.
+        if not chunk_ids:
+            raise HTTPException(
+                status_code=404,
+                detail="Document not found."
+            )
+
+        # STEP 4: Delete only the matching chunks.
+        store.collection.delete(
+            ids=chunk_ids
+        )
+                # Remove the deleted document's chat history.
+        delete_messages(document_id)
+
+        # STEP 5: Confirm deletion.
+        return {
+            "message": "Document deleted successfully.",
+            "document_id": document_id,
+            "deleted_chunks": len(chunk_ids)
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        logger.exception("Document deletion failed")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Document deletion failed."
+        )
+
+@app.get("/documents/{document_id}/messages")
+def get_document_messages(document_id: str):
+    """Retrieve saved conversations for one document."""
+
+    try:
+        messages = get_messages(document_id)
+
+        return {
+            "document_id": document_id,
+            "messages": messages,
+        }
+
+    except Exception:
+        logger.exception("Failed to retrieve chat history")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve chat history.",
         )

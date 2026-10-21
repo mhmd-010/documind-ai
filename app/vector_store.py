@@ -33,32 +33,48 @@ class VectorStore:
     def add_chunks(
         self,
         chunks: list[dict],
-        document_id: str
+        document_id: str,
+        filename: str = "Unknown PDF",
+        total_pages: int = 0
     ) -> None:
+        """
+        Store document chunks, embeddings and metadata.
+
+        filename and total_pages are optional so existing
+        code that calls add_chunks() continues to work.
+        """
+
         if not chunks:
             return
 
+        # Extract the text from each chunk.
         texts = [
             chunk["text"]
             for chunk in chunks
         ]
 
+        # Generate embeddings using our existing model.
         embeddings = embed_texts(texts)
 
+        # Give each chunk a unique ID.
         ids = [
             f"{document_id}_chunk_{chunk['chunk_id']}"
             for chunk in chunks
         ]
 
+        # Store document information alongside each chunk.
         metadata = [
             {
                 "document_id": document_id,
                 "page_number": chunk["page_number"],
-                "chunk_id": chunk["chunk_id"]
+                "chunk_id": chunk["chunk_id"],
+                "filename": filename,
+                "total_pages": total_pages
             }
             for chunk in chunks
         ]
 
+        # Save chunks and embeddings in persistent ChromaDB.
         self.collection.upsert(
             ids=ids,
             documents=texts,
@@ -79,7 +95,7 @@ class VectorStore:
         if top_k <= 0:
             raise ValueError("top_k must be positive")
 
-        # Filter by document when requested.
+        # Optionally filter by a selected document.
         where_filter = None
 
         if document_id is not None:
@@ -87,7 +103,7 @@ class VectorStore:
                 "document_id": document_id
             }
 
-        # Count only matching documents.
+        # Count matching chunks.
         if where_filter is None:
             count = self.collection.count()
         else:
@@ -100,6 +116,7 @@ class VectorStore:
         if count == 0:
             return []
 
+        # Embed the user's question.
         query_embedding = embed_texts([question])[0]
 
         query_options = {
@@ -117,6 +134,7 @@ class VectorStore:
         if where_filter is not None:
             query_options["where"] = where_filter
 
+        # Search ChromaDB.
         results = self.collection.query(
             **query_options
         )
