@@ -21,9 +21,24 @@ class RAGPipeline:
         if not question.strip():
             raise ValueError("Question cannot be empty")
 
-        # Preserve compatibility with existing retrievers.
+                # STEP 1: Preserve the user's original question.
+        original_question = question.strip()
+
+        # STEP 2: Correct spelling and grammar for retrieval.
+        # Fall back to the original question if rewriting fails.
+        try:
+            rewritten_question = self.llm_service.rewrite_question(
+                original_question
+            )
+        except Exception:
+            rewritten_question = original_question
+
+        if not rewritten_question or not rewritten_question.strip():
+            rewritten_question = original_question
+
+        # STEP 3: Search using the improved question.
         search_options = {
-            "question": question,
+            "question": rewritten_question,
             "top_k": top_k
         }
 
