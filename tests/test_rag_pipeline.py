@@ -155,3 +155,140 @@ def test_misspelled_question_rewriting(mock_pipeline):
     )
 
     assert result["sources"][0]["page_number"] == 1
+    
+from unittest.mock import MagicMock
+
+
+def test_conversational_memory_rewrites_followup():
+    from app.rag_pipeline import RAGPipeline
+
+    # Create a mock retriever.
+    retriever = MagicMock()
+
+    retriever.search.return_value = [
+        {
+            "document_id": "test-document",
+            "page_number": 5,
+            "chunk_id": "chunk-1",
+            "text": (
+                "XGBoost achieved a lower prediction error "
+                "than Random Forest."
+            )
+        }
+    ]
+
+    # Create a mock LLM service.
+    llm = MagicMock()
+
+    llm.rewrite_question.return_value = (
+        "Which performed better, Random Forest or XGBoost?"
+    )
+
+    llm.generate_answer.return_value = (
+        "XGBoost performed better."
+    )
+
+    # Simulate previous conversation messages.
+    history = [
+        {
+            "role": "user",
+            "content": "What models were evaluated?"
+        },
+        {
+            "role": "assistant",
+            "content": "Random Forest and XGBoost."
+        }
+    ]
+
+    # Create the RAG pipeline.
+    rag = RAGPipeline(
+        vector_store=retriever,
+        llm_service=llm
+    )
+
+    # Ask a follow-up question.
+    result = rag.ask(
+        question="Which one performed better?",
+        document_id="test-document",
+        conversation_history=history
+    )
+
+    # Verify that history was passed to the LLM.
+    llm.rewrite_question.assert_called_once_with(
+        "Which one performed better?",
+        conversation_history=history
+    )
+
+    # Verify that retrieval used the rewritten question.
+    retriever.search.assert_called_once_with(
+        question=(
+            "Which performed better, Random Forest or XGBoost?"
+        ),
+        top_k=5,
+        document_id="test-document"
+    )
+
+    # Verify that the answer was generated.
+    assert result["answer"] == "XGBoost performed better."
+
+    # Verify that the source belongs to the selected PDF.
+    assert result["sources"][0]["document_id"] == "test-document"
+
+def test_answer_generation_receives_conversation_history():
+    from unittest.mock import MagicMock
+
+    from app.rag_pipeline import RAGPipeline
+
+    retriever = MagicMock()
+    llm = MagicMock()
+
+    history = [
+        {
+            "role": "user",
+            "content": "Compare Random Forest and XGBoost."
+        },
+        {
+            "role": "assistant",
+            "content": "Their performance varies by dataset."
+        }
+    ]
+
+    retriever.search.return_value = [
+        {
+            "document_id": "test-doc",
+            "chunk_id": 1,
+            "page_number": 5,
+            "text": "XGBoost performed better on hourly BTC."
+        }
+    ]
+
+    llm.rewrite_question.return_value = (
+        "Why did XGBoost perform better on hourly BTC?"
+    )
+
+    llm.generate_answer.return_value = (
+        "XGBoost captured nonlinear patterns in the data."
+    )
+
+    pipeline = RAGPipeline(
+        vector_store=retriever,
+        llm_service=llm
+    )
+
+    result = pipeline.ask(
+        question="Why did it perform better?",
+        document_id="test-doc",
+        conversation_history=history
+    )
+
+    llm.generate_answer.assert_called_once()
+
+    args = llm.generate_answer.call_args.kwargs
+
+    assert args["question"] == "Why did it perform better?"
+    assert args["conversation_history"] == history
+    assert "[Page 5]" in args["context"]
+
+    assert result["answer"] == (
+        "XGBoost captured nonlinear patterns in the data."
+    )

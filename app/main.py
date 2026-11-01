@@ -201,9 +201,11 @@ class QuestionRequest(BaseModel):
     document_id: str | None = None
 
 
+
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
 
+    # Step 1: Validate the question.
     if not request.question.strip():
         raise HTTPException(
             status_code=422,
@@ -211,32 +213,49 @@ def ask_question(request: QuestionRequest):
         )
 
     try:
+        # Step 2: Initialize the persistent vector store.
         store = VectorStore(
             persist_directory=str(
                 BASE_DIR / "data" / "chroma_db"
             )
         )
 
+        # Step 3: Initialize the hybrid retriever.
         retriever = PersistentHybridRetriever(
             vector_store=store
         )
 
+        # Step 4: Initialize the Groq LLM.
         llm = LLMService(
             model_name="openai/gpt-oss-20b"
         )
 
+        # Step 5: Initialize the RAG pipeline.
         rag = RAGPipeline(
             vector_store=retriever,
             llm_service=llm
         )
 
-        result = rag.ask(
-            question=request.question,
-            top_k=request.top_k,
-            document_id=request.document_id
-        )
+        # Step 6: Retrieve recent conversation history.
+        conversation_history = []
 
-        # Save conversations associated with a specific PDF.
+        if request.document_id:
+            all_messages = get_messages(
+                request.document_id
+            )
+
+            # Keep the most recent 10 messages.
+            conversation_history = all_messages[-10:]
+
+        # Step 7: Process the user's question.
+        result = rag.ask(
+    question=request.question,
+    top_k=request.top_k,
+    document_id=request.document_id,
+    conversation_history=conversation_history
+)
+
+        # Step 8: Save the conversation to SQLite.
         if request.document_id:
             save_message(
                 document_id=request.document_id,
@@ -251,6 +270,7 @@ def ask_question(request: QuestionRequest):
                 sources=result.get("sources", []),
             )
 
+        # Step 9: Return the AI response.
         return result
 
     except Exception:
@@ -260,6 +280,7 @@ def ask_question(request: QuestionRequest):
             status_code=500,
             detail="Question answering failed."
         )
+
 
 
 @app.get("/documents")

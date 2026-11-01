@@ -14,7 +14,6 @@ class PersistentHybridRetriever:
     ):
         if rrf_k <= 0:
             raise ValueError("rrf_k must be positive")
-
         self.vector_store = vector_store
         self.rrf_k = rrf_k
 
@@ -121,15 +120,17 @@ class PersistentHybridRetriever:
         }
 
         # Sort by RRF score, then keyword rank.
+        
         final_ids = sorted(
             ids,
             key=lambda record_id: (
                 -combined_scores[record_id],
-                keyword_rank[record_id],
-                semantic_rank[record_id],
+                keyword_rank.get(record_id, float("inf")),
+                semantic_rank.get(record_id, float("inf")),
                 record_id
             )
         )[:top_k]
+
 
         records_by_id = {
             record_id: {
